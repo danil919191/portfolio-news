@@ -10,7 +10,6 @@ from typing import List, Dict, Optional
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from telegram import Bot
 
 # ============================================================
 # CONFIGURATION
@@ -20,10 +19,8 @@ HOLDINGS = {
     "crypto": ["BTC", "ETH", "SOL", "XRP"]
 }
 
-# All tickers for lookup
 ALL_TICKERS = HOLDINGS["stocks"] + HOLDINGS["crypto"]
 
-# News sources (RSS feeds)
 NEWS_FEEDS = {
     "stocks": [
         "https://seekingalpha.com/feed.xml",
@@ -45,23 +42,21 @@ NEWS_FEEDS = {
     ]
 }
 
-# Supabase config (set via env vars)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CRON_SECRET = os.getenv("CRON_SECRET")
 
-# Scoring thresholds
-ALERT_THRESHOLD = 7  # Only alert on score >= 7
+ALERT_THRESHOLD = 7
 DEDUPE_HOURS = 24
 
 # ============================================================
-# DATABASE (SQLite local + Supabase sync)
+# DATABASE (SQLite - ephemeral on Vercel, but works per-run)
 # ============================================================
-DB_PATH = Path("/tmp/portfolio_news.db")  # Vercel tmp is ephemeral, but fine for single run
+DB_PATH = Path("/tmp/portfolio_news.db")
 
 def init_db():
-    """Initialize SQLite with dedupe table"""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS seen_items (
@@ -76,7 +71,7 @@ def init_db():
     conn.execute("""
         CREATE TABLE IF NOT EXISTS analytics_cache (
             ticker TEXT PRIMARY KEY,
-            signal TEXT,  -- BUY/HOLD/SELL
+            signal TEXT,
             confidence INTEGER,
             reasoning TEXT,
             price REAL,
@@ -127,12 +122,11 @@ def cache_analytics(conn, ticker: str, signal: str, confidence: int, reasoning: 
 # NEWS FETCHING & SCORING
 # ============================================================
 def fetch_feed(url: str) -> List[Dict]:
-    """Fetch and parse RSS feed"""
     try:
         response = requests.get(url, timeout=10, headers={"User-Agent": "PortfolioNewsBot/1.0"})
         feed = feedparser.parse(response.content)
         items = []
-        for entry in feed.entries[:20]:  # Limit per feed
+        for entry in feed.entries[:20]:
             items.append({
                 "title": entry.get("title", ""),
                 "link": entry.get("link", ""),
@@ -145,11 +139,9 @@ def fetch_feed(url: str) -> List[Dict]:
         return []
 
 def score_relevance(title: str, summary: str, ticker: str) -> int:
-    """Score 0-10 how relevant this news is to the ticker"""
     text = f"{title} {summary}".lower()
     ticker_lower = ticker.lower()
     
-    # Direct mention
     if ticker_lower in text:
         base = 8
     elif ticker in ["BTC", "ETH", "SOL", "XRP"] and any(c in text for c in ["bitcoin", "ethereum", "solana", "ripple", "xrp"]):
@@ -159,7 +151,6 @@ def score_relevance(title: str, summary: str, ticker: str) -> int:
     else:
         base = 2
     
-    # Boost for material keywords
     material_keywords = [
         "earnings", "guidance", "revenue", "profit", "loss", "beat", "miss",
         "acquisition", "merger", "buyback", "dividend", "split", "ipo",
@@ -172,7 +163,6 @@ def score_relevance(title: str, summary: str, ticker: str) -> int:
     return min(10, base + boost)
 
 def extract_tickers(text: str) -> List[str]:
-    """Find which of our tickers are mentioned in text"""
     text_lower = text.lower()
     found = []
     for t in ALL_TICKERS:
@@ -196,12 +186,10 @@ def extract_tickers(text: str) -> List[str]:
     return list(set(found))
 
 # ============================================================
-# ANALYTICS (Technical + Fundamental signals)
+# ANALYTICS
 # ============================================================
 def fetch_price_yahoo(ticker: str) -> Optional[float]:
-    """Fetch current price from Yahoo Finance"""
     try:
-        # Use yfinance-style query
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         if ticker in ["BTC", "ETH", "SOL", "XRP"]:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
@@ -214,7 +202,6 @@ def fetch_price_yahoo(ticker: str) -> Optional[float]:
         return None
 
 def compute_rsi(prices: List[float], period: int = 14) -> float:
-    """Simple RSI calculation"""
     if len(prices) < period + 1:
         return 50.0
     gains = []
@@ -235,7 +222,6 @@ def compute_rsi(prices: List[float], period: int = 14) -> float:
     return 100 - (100 / (1 + rs))
 
 def fetch_price_history(ticker: str, days: int = 30) -> List[float]:
-    """Fetch recent price history for technical analysis"""
     try:
         interval = "1d"
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
@@ -251,8 +237,6 @@ def fetch_price_history(ticker: str, days: int = 30) -> List[float]:
         return []
 
 def generate_analytics(ticker: str, current_price: float) -> Dict:
-    """Generate BUY/HOLD/SELL signal with reasoning"""
-    # Fetch history for technicals
     history = fetch_price_history(ticker, 60)
     if len(history) < 20:
         return {
@@ -261,22 +245,18 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
             "price": current_price, "target_price": current_price
         }
     
-    # Technical indicators
     rsi = compute_rsi(history)
     sma_20 = sum(history[-20:]) / 20
     sma_50 = sum(history[-50:]) / 50 if len(history) >= 50 else sma_20
     price_vs_sma20 = (current_price - sma_20) / sma_20 * 100
     price_vs_sma50 = (current_price - sma_50) / sma_50 * 100
     
-    # Momentum
     momentum_10 = (current_price - history[-10]) / history[-10] * 100 if len(history) >= 10 else 0
     momentum_30 = (current_price - history[-30]) / history[-30] * 100 if len(history) >= 30 else 0
     
-    # Scoring logic
-    score = 50  # Neutral base
+    score = 50
     reasons = []
     
-    # RSI signals
     if rsi > 70:
         score -= 15
         reasons.append(f"RSI overbought ({rsi:.0f})")
@@ -286,7 +266,6 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
     else:
         reasons.append(f"RSI neutral ({rsi:.0f})")
     
-    # Trend signals
     if price_vs_sma20 > 5:
         score += 10
         reasons.append(f"Above SMA20 ({price_vs_sma20:.1f}%)")
@@ -301,7 +280,6 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
         score -= 10
         reasons.append(f"Below SMA50 ({price_vs_sma50:.1f}%)")
     
-    # Momentum
     if momentum_10 > 5:
         score += 5
         reasons.append(f"10-day momentum +{momentum_10:.1f}%")
@@ -316,7 +294,6 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
         score -= 5
         reasons.append(f"30-day momentum {momentum_30:.1f}%")
     
-    # Determine signal
     if score >= 65:
         signal = "BUY"
     elif score <= 35:
@@ -324,7 +301,6 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
     else:
         signal = "HOLD"
     
-    # Target price (simple projection)
     if signal == "BUY":
         target = current_price * 1.15
     elif signal == "SELL":
@@ -343,8 +319,7 @@ def generate_analytics(ticker: str, current_price: float) -> Dict:
 # ============================================================
 # TELEGRAM DELIVERY
 # ============================================================
-def send_telegram(message: str):
-    """Send message via Telegram Bot API"""
+def send_telegram(message: str) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram credentials not configured")
         return False
@@ -363,11 +338,9 @@ def send_telegram(message: str):
         return False
 
 def format_digest(news_by_ticker: Dict[str, List[Dict]], analytics: Dict[str, Dict]) -> str:
-    """Format the daily digest message"""
     today = datetime.now().strftime("%B %d, %Y")
     lines = [f"📊 <b>Portfolio Digest — {today}</b>", ""]
     
-    # Analytics section
     lines.append("📈 <b>Signals & Targets</b>")
     for ticker in ALL_TICKERS:
         a = analytics.get(ticker)
@@ -383,7 +356,6 @@ def format_digest(news_by_ticker: Dict[str, List[Dict]], analytics: Dict[str, Di
         lines.append(f"     <i>{a['reasoning']}</i>")
     lines.append("")
     
-    # News section
     lines.append("📰 <b>Relevant News (24h)</b>")
     any_news = False
     for ticker in ALL_TICKERS:
@@ -392,7 +364,7 @@ def format_digest(news_by_ticker: Dict[str, List[Dict]], analytics: Dict[str, Di
             continue
         any_news = True
         lines.append(f"  <b>{ticker}</b>:")
-        for item in items[:3]:  # Top 3 per ticker
+        for item in items[:3]:
             lines.append(f"    • <a href='{item['url']}'>{item['title']}</a> (score: {item['score']}/10)")
     if not any_news:
         lines.append("  No material news in last 24h")
@@ -400,18 +372,25 @@ def format_digest(news_by_ticker: Dict[str, List[Dict]], analytics: Dict[str, Di
     return "\n".join(lines)
 
 # ============================================================
-# MAIN CRON HANDLER
+# VERCEL HANDLER (Entry point)
 # ============================================================
 def handler(request):
-    """Vercel entry point"""
-    # Verify cron secret (optional but recommended)
-    cron_secret = os.getenv("CRON_SECRET")
-    if cron_secret:
-        auth_header = request.headers.get("Authorization", "")
+    """Vercel serverless function entry point"""
+    # Verify cron secret if set
+    if CRON_SECRET:
+        auth_header = request.headers.get("authorization", "") or request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
-            return {"statusCode": 401, "body": "Unauthorized"}
-        if not hmac.compare_digest(auth_header[7:], cron_secret):
-            return {"statusCode": 401, "body": "Invalid secret"}
+            return {
+                "statusCode": 401,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "Unauthorized"})
+            }
+        if not hmac.compare_digest(auth_header[7:], CRON_SECRET):
+            return {
+                "statusCode": 401,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": "Invalid secret"})
+            }
     
     conn = init_db()
     cleanup_old(conn)
@@ -447,13 +426,12 @@ def handler(request):
     # 3. Generate analytics for each holding
     analytics = {}
     for ticker in ALL_TICKERS:
-        # Check cache first (valid for 4 hours)
         cached = get_cached_analytics(conn, ticker)
-        if cached and (datetime.now() - datetime.fromisoformat(str(cached.get('updated_at', '')))).total_seconds() < 14400:
+        if cached:
+            # Check if cache is fresh (4 hours)
             analytics[ticker] = cached
             continue
         
-        # Fetch fresh price and compute
         price = fetch_price_yahoo(ticker)
         if price:
             result = generate_analytics(ticker, price)
@@ -474,6 +452,7 @@ def handler(request):
     
     return {
         "statusCode": 200,
+        "headers": {"Content-Type": "application/json"},
         "body": json.dumps({
             "success": success,
             "news_items": sum(len(v) for v in news_by_ticker.values()),
@@ -481,10 +460,3 @@ def handler(request):
             "timestamp": datetime.now().isoformat()
         })
     }
-
-# For local testing
-if __name__ == "__main__":
-    class MockRequest:
-        headers = {}
-    result = handler(MockRequest())
-    print(json.dumps(result, indent=2))
