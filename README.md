@@ -83,4 +83,5 @@ Daily 8 AM ET digest to Telegram with:
 ## Monitoring
 - **Vercel Logs**: Dashboard → Functions → `api/cron` → Logs
 - **Supabase**: Table Editor → `cron_logs` for run history
-- **Telegram**: Daily message at 8 AM ET
+- **Telegram**: Daily message at 8 AM ET# Deploy trigger Mon, Jul 27, 2026 10:17:52 PM
+# Deploy trigger Mon, Jul 27, 2026 10:18:06 PM
