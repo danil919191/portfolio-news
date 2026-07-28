@@ -68,8 +68,10 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Drop old schema and create new one
+    conn.execute("DROP TABLE IF EXISTS analytics_cache")
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS analytics_cache (
+        CREATE TABLE analytics_cache (
             ticker TEXT PRIMARY KEY,
             signal_short TEXT, confidence_short INTEGER, reasoning_short TEXT,
             signal_long TEXT, confidence_long INTEGER, reasoning_long TEXT,
@@ -116,7 +118,7 @@ def get_cached_analytics(conn, ticker: str) -> Optional[Dict]:
     return None
 
 def cache_analytics(conn, ticker: str, data: Dict):
-    conn.execute("""INSERT OR REPLACE INTO analytics_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+    conn.execute("""INSERT OR REPLACE INTO analytics_cache VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                  (ticker, data["signal_short"], data["confidence_short"], data["reasoning_short"],
                   data["signal_long"], data["confidence_long"], data["reasoning_long"],
                   data["price"], data["target_price_short"], data["target_price_long"],
@@ -223,8 +225,13 @@ Summary for {ticker}:"""
 def fetch_price_yahoo(ticker: str) -> Optional[float]:
     try:
         req = _import_requests()
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        if ticker in ["BTC","ETH","SOL","XRP"]: url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
+        # Handle Canadian ETFs
+        if ticker == "VDY":
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.TO"
+        elif ticker in ["BTC","ETH","SOL","XRP"]:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
+        else:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         resp = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         return float(resp.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
     except Exception as e:
@@ -234,8 +241,12 @@ def fetch_price_yahoo(ticker: str) -> Optional[float]:
 def fetch_price_history(ticker: str, days: int = 90) -> List[float]:
     try:
         req = _import_requests()
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
-        if ticker in ["BTC","ETH","SOL","XRP"]: url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
+        if ticker == "VDY":
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.TO"
+        elif ticker in ["BTC","ETH","SOL","XRP"]:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
+        else:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         url += f"?period1={int(time.time())-days*86400}&period2={int(time.time())}&interval=1d"
         data = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}).json()
         return [c for c in data["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c is not None]
@@ -247,9 +258,12 @@ def fetch_analyst_data(ticker: str) -> Dict:
     """Fetch analyst ratings and price targets from Yahoo Finance."""
     try:
         req = _import_requests()
-        url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=recommendationTrend,financialData"
-        if ticker in ["BTC","ETH","SOL","XRP"]:
+        if ticker == "VDY":
+            url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}.TO?modules=recommendationTrend,financialData"
+        elif ticker in ["BTC","ETH","SOL","XRP"]:
             url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}-USD?modules=recommendationTrend,financialData"
+        else:
+            url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=recommendationTrend,financialData"
         resp = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = resp.json().get("quoteSummary", {}).get("result", [{}])[0]
         
