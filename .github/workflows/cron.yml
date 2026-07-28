@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '0 12 * * 1-5'
   workflow_dispatch:
-    inputs:
-      test_run:
-        description: 'Run a test deployment'
-        required: false
-        default: 'false'
 
 jobs:
   run-cron:
@@ -38,20 +33,7 @@ jobs:
       - name: Run cron job
         run: |
           cd api
-          python -c "
-import sys
-sys.path.insert(0, '.')
-from cron import handler
-import json
-import os
-
-request = {'headers': {}, 'query': {}, 'body': None, 'method': 'GET'}
-if os.getenv('CRON_SECRET'):
-    request['headers']['Authorization'] = 'Bearer ' + os.getenv('CRON_SECRET')
-
-result = handler(request)
-print(json.dumps(result, indent=2))
-"
+          python run_cron.py
 
       - name: Log result
         if: always()
