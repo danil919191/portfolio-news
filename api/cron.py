@@ -24,6 +24,13 @@ def _import_feedparser():
 # ============================================================
 ALL_TICKERS = ["AMZN", "NVDA", "VDY", "BTC", "ETH", "SOL", "XRP"]
 
+# Group tickers by asset class for better formatting
+ASSET_CLASSES = {
+    "📈 <b>US Stocks</b>": ["AMZN", "NVDA"],
+    "🇨🇦 <b>Canadian ETFs</b>": ["VDY"],
+    "₿ <b>Crypto</b>": ["BTC", "ETH", "SOL", "XRP"],
+}
+
 NEWS_FEEDS = {
     "stocks": [
         "https://seekingalpha.com/feed.xml",
@@ -41,6 +48,18 @@ NEWS_FEEDS = {
     "general": [
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^IXIC",
+    ],
+    # NEW: Macro/macro-economic feeds for broader context
+    "macro": [
+        "https://www.reuters.com/markets/us/rss",           # US markets/macro
+        "https://www.reuters.com/business/economy/rss",    # Economics/Fed/rates
+        "https://www.reuters.com/markets/commodities/rss", # Oil/commodities
+        "https://www.reuters.com/technology/artificial-intelligence/rss", # AI sector
+        "https://www.bloomberg.com/feed/podcast/etf-report.xml", # ETF/sector flows
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=CL=F",  # Crude oil
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=GC=F",  # Gold
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^TNX",  # 10Y Treasury yield
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?s=DX-Y.NYB", # Dollar index
     ]
 }
 
@@ -126,6 +145,111 @@ def cache_analytics(conn, ticker: str, data: Dict):
                   data["analyst_rating"], data["analyst_target"], data["analyst_count"],
                   data["news_summary"], datetime.now()))
     conn.commit()
+
+# ============================================================
+# MACRO NEWS EXTRACTION & ANALYSIS
+# ============================================================
+MACRO_KEYWORDS = {
+    "oil": ["oil", "crude", "brent", "wti", "opec", "energy sector", "energy stocks", "xle", "energy etf"],
+    "rates": ["fed", "federal reserve", "interest rate", "rate cut", "rate hike", "powell", "fomc", "treasury yield", "10-year", "bond yield"],
+    "usd": ["dollar", "usd", "dxy", "greenback", "currency", "forex"],
+    "inflation": ["inflation", "cpi", "pce", "core inflation", "prices rose", "prices fell"],
+    "ai": ["artificial intelligence", "ai chip", "ai infrastructure", "data center", "gpu", "nvidia", "semiconductor", "chip"],
+    "crypto_reg": ["sec", "crypto regulation", "etf approval", "bitcoin etf", "ethereum etf", "cryptocurrency regulation", "binance", "coinbase"],
+    "recession": ["recession", "gdp", "unemployment", "jobless", "economic growth", "soft landing", "hard landing"],
+    "china": ["china", "chinese economy", "pboc", "yuan", "hong kong"],
+    "earnings": ["earnings", "quarterly results", "guidance", "outlook", "revenue beat", "revenue miss"],
+}
+
+def extract_macro_themes(articles: List[Dict]) -> Dict[str, List[Dict]]:
+    """Extract macro themes from all fetched articles."""
+    themes = {theme: [] for theme in MACRO_KEYWORDS}
+    
+    for article in articles:
+        text = f"{article['title']} {article['summary']}".lower()
+        for theme, keywords in MACRO_KEYWORDS.items():
+            if any(kw in text for kw in keywords):
+                themes[theme].append(article)
+                break  # Assign to first matching theme to avoid duplicates
+    
+    # Only return themes with content
+    return {k: v for k, v in themes.items() if v}
+
+def analyze_macro_impact(macro_themes: Dict[str, List[Dict]], holdings: Dict) -> List[str]:
+    """Analyze macro themes and their impact on portfolio holdings."""
+    impacts = []
+    
+    # Oil → Energy sector, but also impacts inflation/rates
+    if macro_themes.get("oil"):
+        oil_articles = macro_themes["oil"][:3]
+        oil_items = []
+        for a in oil_articles:
+            title = a['title'][:80]
+            oil_items.append(f"• {title}...")
+        impacts_str = "\n".join(oil_items)
+        impacts.append(f"🛢️ <b>OIL & ENERGY</b> — Impacts: Energy sector (XLE), inflation → rates, CAD (oil-linked)\n{impacts_str}")
+    
+    # Rates → Growth stocks, crypto, bonds
+    if macro_themes.get("rates"):
+        rate_articles = macro_themes["rates"][:3]
+        rate_items = []
+        for a in rate_articles:
+            title = a['title'][:80]
+            rate_items.append(f"• {title}...")
+        impacts_str = "\n".join(rate_items)
+        impacts.append(f"📊 <b>INTEREST RATES / FED</b> — Impacts: Growth stocks (NVDA, AMZN), Crypto (risk-off), Bonds, USD\n{impacts_str}")
+    
+    # USD → Crypto, commodities, international
+    if macro_themes.get("usd"):
+        usd_articles = macro_themes["usd"][:3]
+        usd_items = []
+        for a in usd_articles:
+            title = a['title'][:80]
+            usd_items.append(f"• {title}...")
+        impacts_str = "\n".join(usd_items)
+        impacts.append(f"💵 <b>US DOLLAR (DXY)</b> — Impacts: Crypto (inverse correlation), Commodities, Int'l earnings (AMZN)\n{impacts_str}")
+    
+    # AI → NVDA, AMZN (AWS), semis
+    if macro_themes.get("ai"):
+        ai_articles = macro_themes["ai"][:3]
+        ai_items = []
+        for a in ai_articles:
+            title = a['title'][:80]
+            ai_items.append(f"• {title}...")
+        impacts_str = "\n".join(ai_items)
+        impacts.append(f"🤖 <b>AI / SEMICONDUCTORS</b> — Direct: NVDA | Indirect: AMZN (AWS), semis supply chain\n{impacts_str}")
+    
+    # Crypto regulation → BTC, ETH, SOL, XRP
+    if macro_themes.get("crypto_reg"):
+        reg_articles = macro_themes["crypto_reg"][:3]
+        reg_items = []
+        for a in reg_articles:
+            title = a['title'][:80]
+            reg_items.append(f"• {title}...")
+        impacts_str = "\n".join(reg_items)
+        impacts.append(f"⚖️ <b>CRYPTO REGULATION</b> — Direct: BTC, ETH, SOL, XRP | ETF flows, institutional adoption\n{impacts_str}")
+    
+    # Inflation → Rates, commodities, value vs growth
+    if macro_themes.get("inflation"):
+        inf_articles = macro_themes["inflation"][:2]
+        inf_items = []
+        for a in inf_articles:
+            title = a['title'][:80]
+            inf_items.append(f"• {title}...")
+        impacts_str = "\n".join(inf_items)
+        impacts.append(f"📈 <b>INFLATION DATA</b> — Impacts: Fed policy → rates, Value (VDY) vs Growth (NVDA/AMZN), Commodities\n{impacts_str}")
+    
+    # China → Commodities, global growth, tech supply chain
+    if macro_themes.get("china"):
+        cn_articles = macro_themes["china"][:2]
+        cn_items = []
+        for a in cn_articles:
+            title = a['title'][:80]
+            cn_items.append(f"• {title}...")
+        impacts_str = "\n".join(cn_items)
+        impacts.append(f"🇨🇳 <b>CHINA / EM</b> — Impacts: Commodities, Global growth, Tech supply chain (NVDA, AMZN)\n{impacts_str}")
+    
+    return impacts
 
 # ============================================================
 # NEWS & SCORING
@@ -448,57 +572,172 @@ def send_telegram(msg: str) -> bool:
         print(f"Telegram error: {e}")
         return False
 
-def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict]) -> str:
+
+def format_price_change(pct: float) -> str:
+    """Format price change with visual indicator."""
+    if pct > 0:
+        return f"🟢 +{pct:.2f}%"
+    elif pct < 0:
+        return f"🔴 {pct:.2f}%"
+    return "⚪ 0.00%"
+
+
+def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro_analysis: List[str] = None) -> str:
     today = datetime.now().strftime("%B %d, %Y")
-    lines = [f"📊 <b>Portfolio Digest — {today}</b>", "", "📈 <b>Signals & Targets</b>"]
-    
-    for t in ALL_TICKERS:
-        a = analytics.get(t)
-        if not a:
-            lines.append(f"  {t}: ⏳ No data")
-            continue
+    lines = [
+        f"📊 <b>Portfolio Digest — {today}</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
+        ""
+    ]
+
+    # ── QUICK LEGEND ───
+    lines.append("📖 <b>How to Read This Digest</b>")
+    lines.append("  • <b>Signal</b> = BUY (consider adding), HOLD (stay put), SELL (consider reducing)")
+    lines.append("  • <b>Confidence</b> = How certain the model is (40% = low, 95% = high)")
+    lines.append("  • <b>Target Price</b> = Where the model thinks the price could go")
+    lines.append("  • <b>Short Term</b> = 1 to 4 weeks outlook  |  <b>Long Term</b> = 3 to 12 months outlook")
+    lines.append("  • <b>Price Changes</b> = 🟢 Green = up  |  🔴 Red = down  |  ⚪ Gray = flat")
+    lines.append("  • <b>Analyst Consensus</b> = What Wall Street professionals think on average")
+    lines.append("")
+
+    # ── SIGNALS & TARGETS grouped by asset class ───
+    lines.append("📈 <b>SIGNALS & TARGETS BY HOLDING</b>")
+    lines.append("")
+
+    for class_label, tickers in ASSET_CLASSES.items():
+        lines.append(f"{class_label}")
+        lines.append("─" * 20)
         
-        emoji_s = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}.get(a["signal_short"], "⚪")
-        emoji_l = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}.get(a["signal_long"], "⚪")
-        
-        p = a["price"]
-        ts = a["target_price_short"]
-        tl = a["target_price_long"]
-        pct_s = ((ts - p) / p * 100) if p else 0
-        pct_l = ((tl - p) / p * 100) if p else 0
-        
-        # Price changes
-        d1 = a["price_change_1d"]
-        d7 = a["price_change_7d"]
-        d30 = a["price_change_30d"]
-        ch1 = f"{d1:+.2f}%" if d1 else "—"
-        ch7 = f"{d7:+.2f}%" if d7 else "—"
-        ch30 = f"{d30:+.2f}%" if d30 else "—"
-        
-        lines.append(f"  {emoji_s} <b>{t}</b> ${p:.2f} | 1d:{ch1} 7d:{ch7} 30d:{ch30}")
-        lines.append(f"     <b>Short:</b> {a['signal_short']} ({a['confidence_short']}%) → ${ts:.2f} ({pct_s:+.1f}%)")
-        lines.append(f"     <i>{a['reasoning_short']}</i>")
-        lines.append(f"     <b>Long:</b>  {a['signal_long']} ({a['confidence_long']}%) → ${tl:.2f} ({pct_l:+.1f}%)")
-        lines.append(f"     <i>{a['reasoning_long']}</i>")
-        if a['analyst_target']:
-            lines.append(f"     📊 Analysts: {a['analyst_rating']} ({a['analyst_count']} analysts) | Target: ${a['analyst_target']:.2f}")
-        else:
-            lines.append(f"     📊 Analysts: {a['analyst_rating']} ({a['analyst_count']} analysts)")
+        for t in tickers:
+            a = analytics.get(t)
+            if not a:
+                lines.append(f"  {t}: ⏳ No data available")
+                lines.append("")
+                continue
+            
+            emoji_s = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}.get(a["signal_short"], "⚪")
+            emoji_l = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}.get(a["signal_long"], "⚪")
+            
+            p = a["price"]
+            ts = a["target_price_short"]
+            tl = a["target_price_long"]
+            pct_s = ((ts - p) / p * 100) if p else 0
+            pct_l = ((tl - p) / p * 100) if p else 0
+            
+            # Price changes with visual indicators
+            ch1 = format_price_change(a["price_change_1d"])
+            ch7 = format_price_change(a["price_change_7d"])
+            ch30 = format_price_change(a["price_change_30d"])
+            
+            # Confidence stars
+            conf_s_stars = "★" * (a["confidence_short"] // 20) + "☆" * (5 - a["confidence_short"] // 20)
+            conf_l_stars = "★" * (a["confidence_long"] // 20) + "☆" * (5 - a["confidence_long"] // 20)
+            
+            # Signal explanation in plain English
+            short_explanation = {
+                "BUY": "Consider adding to your position — the model sees upside in the next 1-4 weeks",
+                "HOLD": "Stay with your current position — no strong reason to buy or sell right now",
+                "SELL": "Consider reducing your position — the model sees downside risk in the next 1-4 weeks"
+            }.get(a["signal_short"], "No clear signal")
+            
+            long_explanation = {
+                "BUY": "Consider adding for the long run — the model sees multi-month upside",
+                "HOLD": "Keep holding — the long-term thesis is intact but no urgent action needed",
+                "SELL": "Consider reducing long-term exposure — structural headwinds expected"
+            }.get(a["signal_long"], "No clear signal")
+            
+            # Current price and recent performance
+            lines.append(f"  {emoji_s} <b>{t}</b> — Current Price: ${p:.2f}")
+            lines.append(f"     Recent Performance: 1-Day {ch1}  |  7-Day {ch7}  |  30-Day {ch30}")
+            lines.append("")
+            
+            # Short-term signal
+            lines.append(f"     ┌ <b>SHORT TERM (1-4 Weeks)</b>: {a['signal_short']}  {conf_s_stars}  Confidence: {a['confidence_short']}%")
+            lines.append(f"     │   What this means: {short_explanation}")
+            lines.append(f"     │   Target Price: ${ts:.2f}  ({pct_s:+.1f}% from current)")
+            lines.append(f"     │   Key Reasons: {a['reasoning_short']}")
+            lines.append(f"     └ ")
+            
+            # Long-term signal
+            lines.append(f"     ┌ <b>LONG TERM (3-12 Months)</b>: {a['signal_long']}  {conf_l_stars}  Confidence: {a['confidence_long']}%")
+            lines.append(f"     │   What this means: {long_explanation}")
+            lines.append(f"     │   Target Price: ${tl:.2f}  ({pct_l:+.1f}% from current)")
+            lines.append(f"     │   Key Reasons: {a['reasoning_long']}")
+            lines.append(f"     └ ")
+            
+            # Analyst opinions section
+            if a['analyst_target'] and a['analyst_target'] > 0:
+                analyst_upside = ((a['analyst_target'] - p) / p * 100) if p else 0
+                lines.append(f"     📊 <b>Wall Street Analyst Consensus</b>")
+                lines.append(f"        • Average Rating: {a['analyst_rating']}  (from {a['analyst_count']} analysts)")
+                lines.append(f"        • Average Price Target: ${a['analyst_target']:.2f}  ({analyst_upside:+.1f}% vs current ${p:.2f})")
+                if analyst_upside > 15:
+                    lines.append(f"        • Interpretation: Analysts are <b>bullish</b> — significant upside expected")
+                elif analyst_upside > 5:
+                    lines.append(f"        • Interpretation: Analysts are <b>moderately positive</b> — modest upside expected")
+                elif analyst_upside > -5:
+                    lines.append(f"        • Interpretation: Analysts are <b>neutral</b> — fairly valued near current price")
+                elif analyst_upside > -15:
+                    lines.append(f"        • Interpretation: Analysts are <b>cautious</b> — some downside risk seen")
+                else:
+                    lines.append(f"        • Interpretation: Analysts are <b>bearish</b> — significant downside expected")
+            else:
+                lines.append(f"     📊 <b>Wall Street Analyst Consensus</b>: {a['analyst_rating']} ({a['analyst_count']} analysts) — No price target available")
+            lines.append("")
+
+    # ── MACRO ANALYSIS ───
+    if macro_analysis:
+        lines.append("🌍 <b>MACRO DRIVERS & HOW THEY AFFECT YOUR HOLDINGS</b>")
+        lines.append("─" * 20)
+        lines.append("<i>These are big-picture economic and market forces that move multiple holdings at once.</i>")
         lines.append("")
+        for item in macro_analysis:
+            lines.append(f"  {item}")
+        lines.append("")
+
+    # ── NEWS SUMMARIES grouped by asset class ───
+    lines.append("📰 <b>RECENT NEWS SUMMARIES (Last 24-48 Hours)</b>")
+    lines.append("─" * 20)
+    lines.append("<i>Only material, high-relevance news is shown. Each item is scored for relevance to your specific holding.</i>")
+    lines.append("")
     
-    lines += ["📰 <b>News Summaries (24h)</b>", ""]
     any_news = False
-    for t in ALL_TICKERS:
-        items = news.get(t, [])
-        if not items: continue
-        any_news = True
-        a = analytics.get(t, {})
-        lines.append(f"  <b>{t}</b> ({len(items)} articles)")
-        if a.get("news_summary"):
-            for line in a["news_summary"].split("\n"):
-                if line.strip(): lines.append(f"    {line.strip()}")
-        lines.append("")
-    if not any_news: lines.append("  No material news in last 24h")
+    for class_label, tickers in ASSET_CLASSES.items():
+        class_has_news = False
+        class_lines = []
+        
+        for t in tickers:
+            items = news.get(t, [])
+            if not items:
+                continue
+            
+            if not class_has_news:
+                class_lines.append(f"  {class_label}")
+                class_has_news = True
+            
+            any_news = True
+            class_lines.append(f"    <b>{t}</b> — {len(items)} relevant article{'s' if len(items) > 1 else ''} found")
+            
+            # Show actual news headlines/URLs
+            for item in items[:3]:  # Limit to top 3 per ticker
+                title = item.get('title', 'No title')
+                url = item.get('url', '')
+                if url:
+                    class_lines.append(f"      • <a href=\"{url}\">{title}</a>")
+                else:
+                    class_lines.append(f"      • {title}")
+            class_lines.append("")
+        
+        if class_has_news:
+            lines.extend(class_lines)
+    
+    if not any_news:
+        lines.append("  No material ticker-specific news in recent feeds.")
+    
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"<i>Generated {datetime.now().strftime('%H:%M ET')} | Next run: Weekday 8:00 AM ET</i>")
+    lines.append("<i>Disclaimer: This is automated analysis, not financial advice. Do your own research.</i>")
     
     return "\n".join(lines)
 
@@ -514,12 +753,16 @@ def handler(request):
     conn = init_db()
     cleanup_old(conn)
     
-    # Fetch all news
+    # Fetch all news (including macro feeds)
     all_items = []
     for feeds in NEWS_FEEDS.values():
         for url in feeds:
             feed_items = fetch_feed(url)
             all_items.extend(feed_items)
+    
+    # Extract macro themes from ALL articles (not just ticker-specific)
+    macro_themes = extract_macro_themes(all_items)
+    macro_analysis = analyze_macro_impact(macro_themes, {t: {"ticker": t} for t in ALL_TICKERS})
     
     # Score & filter per ticker
     news_by_ticker = {t: [] for t in ALL_TICKERS}
@@ -550,8 +793,8 @@ def handler(request):
             analyst = fetch_analyst_data(t)
             analytics[t] = default_analytics(t, 0, analyst, "Price fetch failed")
     
-    # Send digest
-    msg = format_digest(news_by_ticker, analytics)
+    # Send digest with macro analysis
+    msg = format_digest(news_by_ticker, analytics, macro_analysis)
     ok = send_telegram(msg)
     conn.close()
     
