@@ -2,9 +2,8 @@ name: Portfolio News Cron (Backup)
 
 on:
   schedule:
-    # Daily at 8 AM ET = 12 PM UTC (adjust for DST)
     - cron: '0 12 * * 1-5'
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
   run-cron:
@@ -16,6 +15,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +33,20 @@ jobs:
       - name: Run cron job
         run: |
           cd api
-          python cron.py
+          python -c "
+import sys
+sys.path.insert(0, '.')
+from cron import handler
+import json
+import os
+
+request = {'headers': {}, 'query': {}, 'body': None, 'method': 'GET'}
+if os.getenv('CRON_SECRET'):
+    request['headers']['Authorization'] = 'Bearer ' + os.getenv('CRON_SECRET')
+
+result = handler(request)
+print(json.dumps(result, indent=2))
+"
 
       - name: Log result
         if: always()
