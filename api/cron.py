@@ -225,7 +225,7 @@ def fetch_price_yahoo(ticker: str) -> Optional[float]:
         req = _import_requests()
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         if ticker in ["BTC","ETH","SOL","XRP"]: url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
-        resp = req.get(url, timeout=10)
+        resp = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         return float(resp.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
     except Exception as e:
         print(f"Price error {ticker}: {e}")
