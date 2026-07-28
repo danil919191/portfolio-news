@@ -237,7 +237,7 @@ def fetch_price_history(ticker: str, days: int = 90) -> List[float]:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
         if ticker in ["BTC","ETH","SOL","XRP"]: url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
         url += f"?period1={int(time.time())-days*86400}&period2={int(time.time())}&interval=1d"
-        data = req.get(url, timeout=10).json()
+        data = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}).json()
         return [c for c in data["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c is not None]
     except Exception as e:
         print(f"History error {ticker}: {e}")
@@ -250,7 +250,7 @@ def fetch_analyst_data(ticker: str) -> Dict:
         url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=recommendationTrend,financialData"
         if ticker in ["BTC","ETH","SOL","XRP"]:
             url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}-USD?modules=recommendationTrend,financialData"
-        resp = req.get(url, timeout=10)
+        resp = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = resp.json().get("quoteSummary", {}).get("result", [{}])[0]
         
         # Analyst recommendation trend
