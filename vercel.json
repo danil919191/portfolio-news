@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "api/cron.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxDuration": 60
+      }
     }
   ],
   "routes": [
@@ -20,10 +23,5 @@
   ],
   "env": {
     "PYTHONPATH": "."
-  },
-  "functions": {
-    "api/cron.py": {
-      "maxDuration": 60
-    }
   }
 }
