@@ -16,6 +16,8 @@ jobs:
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
       CRON_SECRET: ${{ secrets.CRON_SECRET }}
       NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      ALPHA_VANTAGE_API_KEY: ${{ secrets.ALPHA_VANTAGE_API_KEY }}
+      TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4

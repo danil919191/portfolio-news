@@ -19,11 +19,24 @@ CREATE INDEX IF NOT EXISTS idx_seen_items_created ON seen_items(created_at DESC)
 -- Table for cached analytics (signals, targets)
 CREATE TABLE IF NOT EXISTS analytics_cache (
     ticker TEXT PRIMARY KEY,
-    signal TEXT NOT NULL CHECK (signal IN ('BUY', 'HOLD', 'SELL')),
-    confidence INTEGER NOT NULL CHECK (confidence BETWEEN 0 AND 100),
-    reasoning TEXT NOT NULL,
+    signal_short TEXT NOT NULL CHECK (signal_short IN ('BUY', 'HOLD', 'SELL')),
+    confidence_short INTEGER NOT NULL CHECK (confidence_short BETWEEN 0 AND 100),
+    reasoning_short TEXT NOT NULL,
+    signal_long TEXT NOT NULL CHECK (signal_long IN ('BUY', 'HOLD', 'SELL')),
+    confidence_long INTEGER NOT NULL CHECK (confidence_long BETWEEN 0 AND 100),
+    reasoning_long TEXT NOT NULL,
     price DECIMAL(12, 4) NOT NULL,
-    target_price DECIMAL(12, 4) NOT NULL,
+    target_price_short DECIMAL(12, 4) NOT NULL,
+    target_price_long DECIMAL(12, 4) NOT NULL,
+    price_change_1d DECIMAL(8, 4) DEFAULT 0,
+    price_change_7d DECIMAL(8, 4) DEFAULT 0,
+    price_change_30d DECIMAL(8, 4) DEFAULT 0,
+    analyst_rating TEXT,
+    analyst_target DECIMAL(12, 4),
+    analyst_count INTEGER DEFAULT 0,
+    model_confidence_short INTEGER DEFAULT 50,
+    model_confidence_long INTEGER DEFAULT 50,
+    news_summary TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 

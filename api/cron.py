@@ -24,6 +24,17 @@ def _import_feedparser():
 # ============================================================
 ALL_TICKERS = ["AMZN", "NVDA", "VDY", "BTC", "ETH", "SOL", "XRP"]
 
+# Ticker metadata for price fetching
+TICKER_META = {
+    "AMZN": {"av_symbol": "AMZN", "yahoo": "AMZN", "asset_class": "stock"},
+    "NVDA": {"av_symbol": "NVDA", "yahoo": "NVDA", "asset_class": "stock"},
+    "VDY":  {"av_symbol": "VDY.TO", "yahoo": "VDY.TO", "asset_class": "etf"},
+    "BTC":  {"av_symbol": "BTC", "yahoo": "BTC-USD", "asset_class": "crypto"},
+    "ETH":  {"av_symbol": "ETH", "yahoo": "ETH-USD", "asset_class": "crypto"},
+    "SOL":  {"av_symbol": "SOL", "yahoo": "SOL-USD", "asset_class": "crypto"},
+    "XRP":  {"av_symbol": "XRP", "yahoo": "XRP-USD", "asset_class": "crypto"},
+}
+
 # Group tickers by asset class for better formatting
 ASSET_CLASSES = {
     "📈 <b>US Stocks</b>": ["AMZN", "NVDA"],
@@ -49,7 +60,7 @@ NEWS_FEEDS = {
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^GSPC",
         "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^IXIC",
     ],
-    # NEW: Macro/macro-economic feeds for broader context
+    # Macro/macro-economic feeds for broader context
     "macro": [
         "https://www.reuters.com/markets/us/rss",           # US markets/macro
         "https://www.reuters.com/business/economy/rss",    # Economics/Fed/rates
@@ -69,9 +80,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CRON_SECRET = os.getenv("CRON_SECRET")
 NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
+ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_API_KEY")
 
 ALERT_THRESHOLD = 7
 DEDUPE_HOURS = 24
+MAX_TELEGRAM_CHARS = 4000  # Leave buffer under 4096 limit
 
 # ============================================================
 # DATABASE
@@ -346,37 +360,114 @@ Summary for {ticker}:"""
 # ============================================================
 # PRICE & ANALYTICS
 # ============================================================
-def fetch_price_yahoo(ticker: str) -> Optional[float]:
+def fetch_price_alpha_vantage(ticker: str) -> Optional[float]:
+    """Fetch current price from Alpha Vantage (primary source)."""
+    if not ALPHA_VANTAGE_KEY:
+        return None
     try:
         req = _import_requests()
-        # Handle Canadian ETFs
-        if ticker == "VDY":
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.TO"
-        elif ticker in ["BTC","ETH","SOL","XRP"]:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
-        else:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        meta = TICKER_META.get(ticker, {})
+        av_symbol = meta.get("av_symbol", ticker)
+        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={av_symbol}&apikey={ALPHA_VANTAGE_KEY}"
+        resp = req.get(url, timeout=10)
+        data = resp.json()
+        if "Global Quote" in data and "05. price" in data["Global Quote"]:
+            return float(data["Global Quote"]["05. price"])
+        # Rate limit or error
+        print(f"Alpha Vantage error {ticker}: {data}")
+        return None
+    except Exception as e:
+        print(f"Alpha Vantage error {ticker}: {e}")
+        return None
+
+def fetch_price_twelve_data(ticker: str) -> Optional[float]:
+    """Fetch current price from Twelve Data (backup source)."""
+    if not TWELVE_DATA_KEY:
+        return None
+    try:
+        req = _import_requests()
+        meta = TICKER_META.get(ticker, {})
+        # Twelve Data uses different symbols
+        td_symbol = meta.get("av_symbol", ticker).replace(".TO", ".TSX")
+        url = f"https://api.twelvedata.com/price?symbol={td_symbol}&apikey={TWELVE_DATA_KEY}"
+        resp = req.get(url, timeout=10)
+        data = resp.json()
+        if "price" in data:
+            return float(data["price"])
+        print(f"Twelve Data error {ticker}: {data}")
+        return None
+    except Exception as e:
+        print(f"Twelve Data error {ticker}: {e}")
+        return None
+
+def fetch_price_yahoo(ticker: str) -> Optional[float]:
+    """Fetch current price from Yahoo Finance (fallback)."""
+    try:
+        req = _import_requests()
+        meta = TICKER_META.get(ticker, {})
+        yahoo_symbol = meta.get("yahoo", ticker)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
         resp = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         return float(resp.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
     except Exception as e:
-        print(f"Price error {ticker}: {e}")
+        print(f"Yahoo price error {ticker}: {e}")
         return None
 
-def fetch_price_history(ticker: str, days: int = 90) -> List[float]:
+def fetch_price(ticker: str) -> Optional[float]:
+    """Try multiple price sources in priority order."""
+    # Priority: Alpha Vantage → Twelve Data → Yahoo
+    for fetcher in [fetch_price_alpha_vantage, fetch_price_twelve_data, fetch_price_yahoo]:
+        price = fetcher(ticker)
+        if price and price > 0:
+            return price
+    return None
+
+def fetch_price_history_alpha_vantage(ticker: str, days: int = 90) -> List[float]:
+    """Fetch price history from Alpha Vantage."""
+    if not ALPHA_VANTAGE_KEY:
+        return []
     try:
         req = _import_requests()
-        if ticker == "VDY":
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}.TO"
-        elif ticker in ["BTC","ETH","SOL","XRP"]:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}-USD"
-        else:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+        meta = TICKER_META.get(ticker, {})
+        av_symbol = meta.get("av_symbol", ticker)
+        # Use TIME_SERIES_DAILY_ADJUSTED for history
+        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={av_symbol}&apikey={ALPHA_VANTAGE_KEY}&outputsize=compact"
+        resp = req.get(url, timeout=15)
+        data = resp.json()
+        if "Time Series (Daily)" in data:
+            series = data["Time Series (Daily)"]
+            # Sort by date descending, take last N days
+            closes = []
+            for date_str in sorted(series.keys(), reverse=True)[:days]:
+                closes.append(float(series[date_str]["5. adjusted close"]))
+            return list(reversed(closes))  # chronological order
+        print(f"Alpha Vantage history error {ticker}: {data}")
+        return []
+    except Exception as e:
+        print(f"Alpha Vantage history error {ticker}: {e}")
+        return []
+
+def fetch_price_history_yahoo(ticker: str, days: int = 90) -> List[float]:
+    """Fetch price history from Yahoo Finance (fallback)."""
+    try:
+        req = _import_requests()
+        meta = TICKER_META.get(ticker, {})
+        yahoo_symbol = meta.get("yahoo", ticker)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}"
         url += f"?period1={int(time.time())-days*86400}&period2={int(time.time())}&interval=1d"
         data = req.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"}).json()
         return [c for c in data["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c is not None]
     except Exception as e:
-        print(f"History error {ticker}: {e}")
+        print(f"Yahoo history error {ticker}: {e}")
         return []
+
+def fetch_price_history(ticker: str, days: int = 90) -> List[float]:
+    """Try multiple sources for price history."""
+    for fetcher in [fetch_price_history_alpha_vantage, fetch_price_history_yahoo]:
+        hist = fetcher(ticker, days)
+        if len(hist) >= 20:  # Minimum for RSI/SMA
+            return hist
+    return []
 
 def fetch_analyst_data(ticker: str) -> Dict:
     """Fetch analyst ratings and price targets from Yahoo Finance."""
@@ -559,7 +650,7 @@ def default_analytics(ticker: str, price: float, analyst: Dict, reason: str) -> 
     }
 
 # ============================================================
-# TELEGRAM FORMATTING
+# TELEGRAM FORMATTING HELPERS
 # ============================================================
 def send_telegram(msg: str) -> bool:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return False
@@ -572,7 +663,6 @@ def send_telegram(msg: str) -> bool:
         print(f"Telegram error: {e}")
         return False
 
-
 def format_price_change(pct: float) -> str:
     """Format price change with visual indicator."""
     if pct > 0:
@@ -580,7 +670,6 @@ def format_price_change(pct: float) -> str:
     elif pct < 0:
         return f"🔴 {pct:.2f}%"
     return "⚪ 0.00%"
-
 
 def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro_analysis: List[str] = None) -> str:
     today = datetime.now().strftime("%B %d, %Y")
@@ -591,17 +680,25 @@ def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro
     ]
 
     # ── QUICK LEGEND ───
-    lines.append("📖 <b>How to Read This Digest</b>")
-    lines.append("  • <b>Signal</b> = BUY (consider adding), HOLD (stay put), SELL (consider reducing)")
-    lines.append("  • <b>Confidence</b> = How certain the model is (40% = low, 95% = high)")
-    lines.append("  • <b>Target Price</b> = Where the model thinks the price could go")
-    lines.append("  • <b>Short Term</b> = 1 to 4 weeks outlook  |  <b>Long Term</b> = 3 to 12 months outlook")
-    lines.append("  • <b>Price Changes</b> = 🟢 Green = up  |  🔴 Red = down  |  ⚪ Gray = flat")
-    lines.append("  • <b>Analyst Consensus</b> = What Wall Street professionals think on average")
+    lines.append("📖 <b>Quick Guide</b>")
+    lines.append("  • <b>Signal</b>: BUY (add), HOLD (stay), SELL (reduce)")
+    lines.append("  • <b>Confidence</b>: Model certainty (40% = low, 95% = high)")
+    lines.append("  • <b>Target</b>: Where model sees price going")
+    lines.append("  • <b>Short</b> = 1-4 weeks | <b>Long</b> = 3-12 months")
+    lines.append("  • 🟢 = up | 🔴 = down | ⚪ = flat")
+    lines.append("  • <b>Stars</b> = Model confidence | <b>Analyst</b> = Wall St. consensus")
     lines.append("")
 
-    # ── SIGNALS & TARGETS grouped by asset class ───
-    lines.append("📈 <b>SIGNALS & TARGETS BY HOLDING</b>")
+    # ── MACRO DRIVERS FIRST (actionable, high signal) ───
+    if macro_analysis:
+        lines.append("🌍 <b>MACRO DRIVERS → YOUR HOLDINGS</b>")
+        lines.append("─" * 20)
+        for item in macro_analysis[:5]:  # Limit to top 5 macro themes
+            lines.append(f"  {item}")
+        lines.append("")
+
+    # ── SIGNALS & TARGETS BY ASSET CLASS ───
+    lines.append("📈 <b>SIGNALS & TARGETS</b>")
     lines.append("")
 
     for class_label, tickers in ASSET_CLASSES.items():
@@ -611,7 +708,7 @@ def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro
         for t in tickers:
             a = analytics.get(t)
             if not a:
-                lines.append(f"  {t}: ⏳ No data available")
+                lines.append(f"  {t}: ⏳ No data")
                 lines.append("")
                 continue
             
@@ -629,77 +726,50 @@ def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro
             ch7 = format_price_change(a["price_change_7d"])
             ch30 = format_price_change(a["price_change_30d"])
             
-            # Confidence stars
+            # Confidence stars (model confidence, not analyst)
             conf_s_stars = "★" * (a["confidence_short"] // 20) + "☆" * (5 - a["confidence_short"] // 20)
             conf_l_stars = "★" * (a["confidence_long"] // 20) + "☆" * (5 - a["confidence_long"] // 20)
             
-            # Signal explanation in plain English
-            short_explanation = {
-                "BUY": "Consider adding to your position — the model sees upside in the next 1-4 weeks",
-                "HOLD": "Stay with your current position — no strong reason to buy or sell right now",
-                "SELL": "Consider reducing your position — the model sees downside risk in the next 1-4 weeks"
-            }.get(a["signal_short"], "No clear signal")
+            # One-line key takeaway
+            short_takeaway = {
+                "BUY": "↑ Upside likely short-term",
+                "HOLD": "→ Range-bound, wait for catalyst",
+                "SELL": "↓ Downside risk near-term"
+            }.get(a["signal_short"], "?")
             
-            long_explanation = {
-                "BUY": "Consider adding for the long run — the model sees multi-month upside",
-                "HOLD": "Keep holding — the long-term thesis is intact but no urgent action needed",
-                "SELL": "Consider reducing long-term exposure — structural headwinds expected"
-            }.get(a["signal_long"], "No clear signal")
+            long_takeaway = {
+                "BUY": "↑ Structural tailwinds",
+                "HOLD": "→ Thesis intact, no urgency",
+                "SELL": "↓ Headwinds building"
+            }.get(a["signal_long"], "?")
             
-            # Current price and recent performance
-            lines.append(f"  {emoji_s} <b>{t}</b> — Current Price: ${p:.2f}")
-            lines.append(f"     Recent Performance: 1-Day {ch1}  |  7-Day {ch7}  |  30-Day {ch30}")
-            lines.append("")
+            # Current price and recent performance - compact
+            lines.append(f"  {emoji_s} <b>{t}</b> ${p:.2f} | 1D {ch1} 7D {ch7} 30D {ch30}")
             
-            # Short-term signal
-            lines.append(f"     ┌ <b>SHORT TERM (1-4 Weeks)</b>: {a['signal_short']}  {conf_s_stars}  Confidence: {a['confidence_short']}%")
-            lines.append(f"     │   What this means: {short_explanation}")
-            lines.append(f"     │   Target Price: ${ts:.2f}  ({pct_s:+.1f}% from current)")
-            lines.append(f"     │   Key Reasons: {a['reasoning_short']}")
-            lines.append(f"     └ ")
+            # Short-term - compact single line
+            lines.append(f"     ST: {a['signal_short']} {conf_s_stars} ({a['confidence_short']}%) Target ${ts:.2f} ({pct_s:+.1f}%) — {short_takeaway}")
+            lines.append(f"        Why: {a['reasoning_short'][:120]}...")
             
-            # Long-term signal
-            lines.append(f"     ┌ <b>LONG TERM (3-12 Months)</b>: {a['signal_long']}  {conf_l_stars}  Confidence: {a['confidence_long']}%")
-            lines.append(f"     │   What this means: {long_explanation}")
-            lines.append(f"     │   Target Price: ${tl:.2f}  ({pct_l:+.1f}% from current)")
-            lines.append(f"     │   Key Reasons: {a['reasoning_long']}")
-            lines.append(f"     └ ")
+            # Long-term - compact
+            lines.append(f"     LT: {a['signal_long']} {conf_l_stars} ({a['confidence_long']}%) Target ${tl:.2f} ({pct_l:+.1f}%) — {long_takeaway}")
+            lines.append(f"        Why: {a['reasoning_long'][:120]}...")
             
-            # Analyst opinions section
+            # Analyst opinions - clear labeling
             if a['analyst_target'] and a['analyst_target'] > 0:
                 analyst_upside = ((a['analyst_target'] - p) / p * 100) if p else 0
-                lines.append(f"     📊 <b>Wall Street Analyst Consensus</b>")
-                lines.append(f"        • Average Rating: {a['analyst_rating']}  (from {a['analyst_count']} analysts)")
-                lines.append(f"        • Average Price Target: ${a['analyst_target']:.2f}  ({analyst_upside:+.1f}% vs current ${p:.2f})")
-                if analyst_upside > 15:
-                    lines.append(f"        • Interpretation: Analysts are <b>bullish</b> — significant upside expected")
-                elif analyst_upside > 5:
-                    lines.append(f"        • Interpretation: Analysts are <b>moderately positive</b> — modest upside expected")
-                elif analyst_upside > -5:
-                    lines.append(f"        • Interpretation: Analysts are <b>neutral</b> — fairly valued near current price")
-                elif analyst_upside > -15:
-                    lines.append(f"        • Interpretation: Analysts are <b>cautious</b> — some downside risk seen")
-                else:
-                    lines.append(f"        • Interpretation: Analysts are <b>bearish</b> — significant downside expected")
+                rating_emoji = {"BUY": "🟢", "HOLD": "🟡", "SELL": "🔴"}.get(a['analyst_rating'], "⚪")
+                lines.append(f"     📊 Wall St: {rating_emoji} {a['analyst_rating']} ({a['analyst_count']} analysts) | Target ${a['analyst_target']:.2f} ({analyst_upside:+.1f}%)")
             else:
-                lines.append(f"     📊 <b>Wall Street Analyst Consensus</b>: {a['analyst_rating']} ({a['analyst_count']} analysts) — No price target available")
+                asset_class = TICKER_META.get(t, {}).get("asset_class", "")
+                if asset_class in ["crypto", "etf"]:
+                    lines.append(f"     📊 Wall St: N/A — {asset_class.title()}s typically lack analyst coverage")
+                else:
+                    lines.append(f"     📊 Wall St: {a['analyst_rating']} ({a['analyst_count']} analysts) — No price target")
             lines.append("")
 
-    # ── MACRO ANALYSIS ───
-    if macro_analysis:
-        lines.append("🌍 <b>MACRO DRIVERS & HOW THEY AFFECT YOUR HOLDINGS</b>")
-        lines.append("─" * 20)
-        lines.append("<i>These are big-picture economic and market forces that move multiple holdings at once.</i>")
-        lines.append("")
-        for item in macro_analysis:
-            lines.append(f"  {item}")
-        lines.append("")
-
-    # ── NEWS SUMMARIES grouped by asset class ───
-    lines.append("📰 <b>RECENT NEWS SUMMARIES (Last 24-48 Hours)</b>")
+    # ── NEWS SUMMARIES (truncated to fit) ───
+    lines.append("📰 <b>KEY NEWS (24-48h)</b>")
     lines.append("─" * 20)
-    lines.append("<i>Only material, high-relevance news is shown. Each item is scored for relevance to your specific holding.</i>")
-    lines.append("")
     
     any_news = False
     for class_label, tickers in ASSET_CLASSES.items():
@@ -716,11 +786,11 @@ def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro
                 class_has_news = True
             
             any_news = True
-            class_lines.append(f"    <b>{t}</b> — {len(items)} relevant article{'s' if len(items) > 1 else ''} found")
+            class_lines.append(f"    <b>{t}</b> ({len(items)} items)")
             
-            # Show actual news headlines/URLs
-            for item in items[:3]:  # Limit to top 3 per ticker
-                title = item.get('title', 'No title')
+            # Show top 2 items per ticker with LLM summary if available
+            for item in items[:2]:
+                title = item.get('title', 'No title')[:100]
                 url = item.get('url', '')
                 if url:
                     class_lines.append(f"      • <a href=\"{url}\">{title}</a>")
@@ -736,14 +806,29 @@ def format_digest(news: Dict[str, List[Dict]], analytics: Dict[str, Dict], macro
     
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"<i>Generated {datetime.now().strftime('%H:%M ET')} | Next run: Weekday 8:00 AM ET</i>")
-    lines.append("<i>Disclaimer: This is automated analysis, not financial advice. Do your own research.</i>")
+    lines.append(f"<i>Generated {datetime.now().strftime('%H:%M ET')} | Next: Weekday 8:00 AM ET</i>")
+    lines.append("<i>⚠️ Automated analysis — not financial advice. DYOR.</i>")
     
-    return "\n".join(lines)
+    # Truncate if too long for Telegram
+    full_msg = "\n".join(lines)
+    if len(full_msg) > MAX_TELEGRAM_CHARS:
+        # Find a good truncation point (after a complete ticker section)
+        truncated = full_msg[:MAX_TELEGRAM_CHARS]
+        last_newline = truncated.rfind("\n")
+        if last_newline > MAX_TELEGRAM_CHARS * 0.8:
+            truncated = truncated[:last_newline]
+        full_msg = truncated + "\n\n<i>...message truncated (Telegram limit)</i>"
+    
+    return full_msg
 
 # ============================================================
 # VERCEL HANDLER
 # ============================================================
+# Load .env for local development
+if os.path.exists(".env"):
+    from dotenv import load_dotenv
+    load_dotenv(".env")
+
 def handler(request):
     headers = request.get("headers", {}) if isinstance(request, dict) else {}
     auth = headers.get("authorization") or headers.get("Authorization", "")
@@ -783,7 +868,7 @@ def handler(request):
         if cached:
             analytics[t] = cached
             continue
-        price = fetch_price_yahoo(t)
+        price = fetch_price(t)  # Use new multi-source fetcher
         if price:
             items = news_by_ticker.get(t, [])
             res = generate_analytics(t, price, items)
@@ -791,7 +876,7 @@ def handler(request):
             analytics[t] = res
         else:
             analyst = fetch_analyst_data(t)
-            analytics[t] = default_analytics(t, 0, analyst, "Price fetch failed")
+            analytics[t] = default_analytics(t, 0, analyst, "Price fetch failed from all sources")
     
     # Send digest with macro analysis
     msg = format_digest(news_by_ticker, analytics, macro_analysis)
