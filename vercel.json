@@ -20,5 +20,10 @@
   ],
   "env": {
     "PYTHONPATH": "."
+  },
+  "functions": {
+    "api/cron.py": {
+      "maxDuration": 60
+    }
   }
 }
