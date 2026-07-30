@@ -885,6 +885,39 @@ def handler(request):
     
     return {"statusCode": 200, "headers": {"Content-Type": "application/json"}, "body": json.dumps({"success": ok, "news": sum(len(v) for v in news_by_ticker.values()), "analytics": len(analytics)})}
 
-# Alias for Vercel detection
-app = handler
-application = handler
+# WSGI wrapper for Vercel Python runtime
+def app(environ, start_response):
+    """WSGI entry point for Vercel"""
+    # Build request dict from WSGI environ
+    request = {
+        "method": environ.get("REQUEST_METHOD", "GET"),
+        "path": environ.get("PATH_INFO", "/"),
+        "query": environ.get("QUERY_STRING", ""),
+        "headers": {},
+    }
+    # Extract headers from environ
+    for key, value in environ.items():
+        if key.startswith("HTTP_"):
+            header_name = key[5:].replace("_", "-").title()
+            request["headers"][header_name] = value
+        elif key in ("CONTENT_TYPE", "CONTENT_LENGTH"):
+            header_name = key.replace("_", "-").title()
+            request["headers"][header_name] = value
+    
+    # Call handler
+    response = handler(request)
+    
+    # Convert response to WSGI
+    status = response.get("statusCode", 200)
+    headers = response.get("headers", {})
+    body = response.get("body", "")
+    if isinstance(body, dict):
+        import json
+        body = json.dumps(body)
+    
+    wsgi_headers = [(k, v) for k, v in headers.items()]
+    start_response(f"{status} OK", wsgi_headers)
+    return [body.encode("utf-8")]
+
+# Also export as application for ASGI compatibility
+application = app
